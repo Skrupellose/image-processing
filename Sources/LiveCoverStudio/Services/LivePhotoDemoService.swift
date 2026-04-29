@@ -152,7 +152,7 @@ final class LivePhotoDemoService {
         item.value = assetIdentifier as NSString
         item.dataType = kCMMetadataBaseDataType_UTF8 as String
         item.extendedLanguageTag = "und"
-        return item.copy() as! AVMetadataItem
+        return item
     }
 
     private func makeFrameImage(frame: Int, frameCount: Int, width: Int, height: Int) throws -> NSImage {

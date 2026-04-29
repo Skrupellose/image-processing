@@ -19,7 +19,13 @@ struct EditorBar: View {
                     Label("更换封面", systemImage: "photo.on.rectangle.angled")
                 }
 
-                Picker("效果", selection: $viewModel.selectedEffect) {
+                Picker(
+                    "效果",
+                    selection: Binding(
+                        get: { viewModel.selectedEffect },
+                        set: { viewModel.selectEffect($0) }
+                    )
+                ) {
                     ForEach(CoverEffect.allCases) { effect in
                         Text(effect.title).tag(effect)
                     }
