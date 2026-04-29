@@ -17,6 +17,7 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 ICON_SOURCE="$ROOT_DIR/Assets/LiveCoverStudio.icns"
 ICON_NAME="LiveCoverStudio.icns"
 PACKAGE_ZIP="$DIST_DIR/$APP_NAME.zip"
+PACKAGE_DMG="$DIST_DIR/$APP_NAME.dmg"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -86,8 +87,18 @@ case "$MODE" in
     (cd "$DIST_DIR" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$APP_NAME.zip")
     echo "Packaged: $PACKAGE_ZIP"
     ;;
+  --dmg|dmg)
+    rm -f "$PACKAGE_DMG"
+    /usr/bin/hdiutil create \
+      -volname "$APP_NAME" \
+      -srcfolder "$APP_BUNDLE" \
+      -ov \
+      -format UDZO \
+      "$PACKAGE_DMG" >/dev/null
+    echo "Packaged: $PACKAGE_DMG"
+    ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--verify|--package]" >&2
+    echo "usage: $0 [run|--debug|--logs|--verify|--package|--dmg]" >&2
     exit 2
     ;;
 esac

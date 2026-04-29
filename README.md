@@ -39,6 +39,7 @@ swift build
 | 构建 `.app` 并进入 LLDB  | `./script/build_and_run.sh --debug`   | 用 `lldb` 调试 `dist/LiveCoverStudio.app/Contents/MacOS/LiveCoverStudio` |
 | 构建 `.app` 并查看日志   | `./script/build_and_run.sh --logs`    | 启动 App 后打开 `log stream`                                             |
 | 构建 `.app` 并打 zip 包  | `./script/build_and_run.sh --package` | 生成 `dist/LiveCoverStudio.zip`                                          |
+| 构建 `.app` 并打 dmg 包  | `./script/build_and_run.sh --dmg`     | 生成 `dist/LiveCoverStudio.dmg`                                          |
 
 打包脚本会先清理旧的 `dist/LiveCoverStudio.app`，复制图标和 `Info.plist`，再执行：
 
