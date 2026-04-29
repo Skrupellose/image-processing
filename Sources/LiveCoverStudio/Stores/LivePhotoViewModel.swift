@@ -4,15 +4,13 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class LivePhotoViewModel: ObservableObject {
+    private static let previewDirectoryName = "LiveCoverStudioPreview"
+    private static let photosExportDirectoryName = "LiveCoverStudioPhotosExport"
     @Published var resources = LivePhotoResources()
     @Published var extractedFirstFrame: NSImage?
     @Published var processedCoverImage: NSImage?
     @Published var processedPreviewResources = LivePhotoResources()
-    @Published var selectedEffect: CoverEffect = .original {
-        didSet {
-            applySelectedEffect()
-        }
-    }
+    @Published var selectedEffect: CoverEffect = .original
     @Published var statusMessage = "选择 Live Photo 的图片和 MOV 文件开始。"
     @Published var isBusy = false
     @Published var lastExportResult: LivePhotoExportResult?
@@ -22,15 +20,18 @@ final class LivePhotoViewModel: ObservableObject {
     private let frameService = LivePhotoFrameService()
     private let imageProcessor = CoverImageProcessor()
     private let exportService = LivePhotoExportService()
-    private let imageWriter = LivePhotoImageWriter()
-    private let metadataService = LivePhotoMetadataService()
+    private let previewResourceService = LivePhotoPreviewResourceService()
     private let demoService = LivePhotoDemoService()
     private let photosSaveService = PhotosLibrarySaveService()
     private let previewDirectory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("LiveCoverStudioPreview", isDirectory: true)
+        .appendingPathComponent(previewDirectoryName, isDirectory: true)
     private let photosExportDirectory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("LiveCoverStudioPhotosExport", isDirectory: true)
+        .appendingPathComponent(photosExportDirectoryName, isDirectory: true)
     private var previewRevision = 0
+
+    init() {
+        cleanupWorkingDirectories()
+    }
 
     var canPreviewLivePhoto: Bool {
         resources.isComplete
@@ -150,15 +151,26 @@ final class LivePhotoViewModel: ObservableObject {
             return
         }
 
-        do {
-            let image = try frameService.firstFrame(from: videoURL)
-            extractedFirstFrame = image
-            processedCoverImage = image
-            selectedEffect = .original
-            refreshProcessedPreview()
-            statusMessage = "已从 MOV 提取第一帧。"
-        } catch {
-            show(error: error)
+        isBusy = true
+        statusMessage = "正在从 MOV 提取第一帧..."
+
+        let frameService = frameService
+
+        Task {
+            do {
+                let image = try await runOnWorker {
+                    try frameService.firstFrame(from: videoURL)
+                }
+
+                extractedFirstFrame = image
+                selectedEffect = .original
+                try await updateProcessedCover(using: image, effect: .original)
+                statusMessage = "已从 MOV 提取第一帧。"
+            } catch {
+                show(error: error)
+            }
+
+            isBusy = false
         }
     }
 
@@ -177,12 +189,42 @@ final class LivePhotoViewModel: ObservableObject {
             return
         }
 
-        let normalizedImage = normalizedReplacementCover(image)
-        extractedFirstFrame = normalizedImage
-        processedCoverImage = normalizedImage
-        selectedEffect = .original
-        refreshProcessedPreview()
-        statusMessage = "已更换封面图并按视频比例裁切：\(url.lastPathComponent)"
+        isBusy = true
+        statusMessage = "正在处理新的封面图..."
+
+        Task {
+            do {
+                let currentProcessedCoverImage = processedCoverImage
+                let currentExtractedFirstFrame = extractedFirstFrame
+                let currentMotionVideoURL = resources.motionVideoURL
+
+                let normalizedImage = await runOnWorker {
+                    Self.makeNormalizedReplacementCover(
+                        image,
+                        targetImage: currentProcessedCoverImage ?? currentExtractedFirstFrame,
+                        motionVideoURL: currentMotionVideoURL
+                    )
+                }
+
+                extractedFirstFrame = normalizedImage
+                selectedEffect = .original
+                try await updateProcessedCover(using: normalizedImage, effect: .original)
+                statusMessage = "已更换封面图并按视频比例裁切：\(url.lastPathComponent)"
+            } catch {
+                show(error: error)
+            }
+
+            isBusy = false
+        }
+    }
+
+    func selectEffect(_ effect: CoverEffect) {
+        guard selectedEffect != effect else {
+            return
+        }
+
+        selectedEffect = effect
+        applySelectedEffect()
     }
 
     func applySelectedEffect() {
@@ -190,12 +232,19 @@ final class LivePhotoViewModel: ObservableObject {
             return
         }
 
-        do {
-            processedCoverImage = try imageProcessor.apply(effect: selectedEffect, to: sourceImage)
-            refreshProcessedPreview()
-            statusMessage = "已应用效果：\(selectedEffect.title)"
-        } catch {
-            show(error: error)
+        let effect = selectedEffect
+        isBusy = true
+        statusMessage = "正在应用效果：\(effect.title)..."
+
+        Task {
+            do {
+                try await updateProcessedCover(using: sourceImage, effect: effect)
+                statusMessage = "已应用效果：\(effect.title)"
+            } catch {
+                show(error: error)
+            }
+
+            isBusy = false
         }
     }
 
@@ -307,6 +356,8 @@ final class LivePhotoViewModel: ObservableObject {
                     videoURL: result.videoURL
                 )
 
+                try? FileManager.default.removeItem(at: exportFolder)
+
                 lastExportResult = result
                 statusMessage = "已保存到照片 App。打开「照片」后应显示为一张 Live Photo。"
             } catch {
@@ -341,35 +392,34 @@ final class LivePhotoViewModel: ObservableObject {
     }
 
     private func refreshProcessedPreview() {
-        previewRevision += 1
-        let currentRevision = previewRevision
-
         guard let image = processedCoverImage,
               let videoURL = resources.motionVideoURL else {
+            previewRevision += 1
             processedPreviewResources = LivePhotoResources()
             return
         }
 
-        Task {
-            let assetIdentifier = await metadataService.assetIdentifier(from: videoURL) ?? UUID().uuidString
-            let previewURL = previewDirectory
-                .appendingPathComponent("processed-\(currentRevision).jpg")
+        refreshProcessedPreview(for: image, videoURL: videoURL)
+    }
 
+    private func refreshProcessedPreview(for image: NSImage, videoURL: URL) {
+        previewRevision += 1
+        let currentRevision = previewRevision
+
+        Task {
             do {
-                try FileManager.default.createDirectory(
-                    at: previewDirectory,
-                    withIntermediateDirectories: true
+                let previewResources = try await previewResourceService.makePreviewResources(
+                    image: image,
+                    videoURL: videoURL,
+                    in: previewDirectory,
+                    revision: currentRevision
                 )
-                try imageWriter.writeJPEG(image, to: previewURL, assetIdentifier: assetIdentifier)
 
                 guard currentRevision == previewRevision else {
                     return
                 }
 
-                processedPreviewResources = LivePhotoResources(
-                    stillImageURL: previewURL,
-                    motionVideoURL: videoURL
-                )
+                processedPreviewResources = previewResources
             } catch {
                 guard currentRevision == previewRevision else {
                     return
@@ -380,12 +430,16 @@ final class LivePhotoViewModel: ObservableObject {
         }
     }
 
-    private func normalizedReplacementCover(_ image: NSImage) -> NSImage {
-        let targetImage = processedCoverImage ?? extractedFirstFrame ?? resources.motionVideoURL.flatMap {
-            try? frameService.firstFrame(from: $0)
+    nonisolated private static func makeNormalizedReplacementCover(
+        _ image: NSImage,
+        targetImage: NSImage?,
+        motionVideoURL: URL?
+    ) -> NSImage {
+        let referenceImage = targetImage ?? motionVideoURL.flatMap {
+            try? LivePhotoFrameService().firstFrame(from: $0)
         }
 
-        guard let targetCGImage = targetImage?.normalizedCGImage,
+        guard let targetCGImage = referenceImage?.normalizedCGImage,
               let normalized = image.scaledToFill(
                 pixelWidth: targetCGImage.width,
                 pixelHeight: targetCGImage.height
@@ -394,6 +448,37 @@ final class LivePhotoViewModel: ObservableObject {
         }
 
         return normalized
+    }
+
+    private func updateProcessedCover(using sourceImage: NSImage, effect: CoverEffect) async throws {
+        let imageProcessor = imageProcessor
+
+        let processedImage = try await runOnWorker {
+            try imageProcessor.apply(effect: effect, to: sourceImage)
+        }
+
+        processedCoverImage = processedImage
+        refreshProcessedPreview(for: processedImage, videoURL: try currentMotionVideoURL())
+    }
+
+    private func currentMotionVideoURL() throws -> URL {
+        guard let videoURL = resources.motionVideoURL else {
+            throw LivePhotoProcessingError.missingResources
+        }
+
+        return videoURL
+    }
+
+    private func runOnWorker<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await Task.detached(priority: .userInitiated, operation: operation).value
+    }
+
+    private func runOnWorker<T: Sendable>(
+        _ operation: @escaping @Sendable () -> T
+    ) async -> T {
+        await Task.detached(priority: .userInitiated, operation: operation).value
     }
 
     private func resetProcessedState() {
@@ -408,5 +493,35 @@ final class LivePhotoViewModel: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         alertMessage = message
         statusMessage = message
+    }
+
+    private func cleanupWorkingDirectories() {
+        do {
+            try previewResourceService.cleanupDirectory(previewDirectory)
+        } catch {
+            statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+
+        do {
+            try cleanupPhotoExportDirectory()
+        } catch {
+            statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func cleanupPhotoExportDirectory() throws {
+        guard FileManager.default.fileExists(atPath: photosExportDirectory.path) else {
+            return
+        }
+
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: photosExportDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+
+        for url in contents {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 }

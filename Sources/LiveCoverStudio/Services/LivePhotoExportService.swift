@@ -28,7 +28,7 @@ final class LivePhotoExportService {
         let exportedVideoURL = folderURL.appendingPathComponent("\(sanitizedBaseName)_motion.mov")
 
         try imageWriter.writeJPEG(coverImage, to: imageURL, assetIdentifier: assetIdentifier)
-        try? FileManager.default.removeItem(at: exportedVideoURL)
+        try removeExistingFileIfNeeded(at: exportedVideoURL)
         try await exportVideo(from: videoURL, to: exportedVideoURL, assetIdentifier: assetIdentifier)
 
         return LivePhotoExportResult(
@@ -70,12 +70,24 @@ final class LivePhotoExportService {
         }
     }
 
+    private func removeExistingFileIfNeeded(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            throw LivePhotoProcessingError.videoExportFailed(error.localizedDescription)
+        }
+    }
+
     private func contentIdentifierMetadataItem(_ assetIdentifier: String) -> AVMetadataItem {
         let item = AVMutableMetadataItem()
         item.identifier = .quickTimeMetadataContentIdentifier
         item.value = assetIdentifier as NSString
         item.dataType = kCMMetadataBaseDataType_UTF8 as String
         item.extendedLanguageTag = "und"
-        return item.copy() as! AVMetadataItem
+        return item
     }
 }

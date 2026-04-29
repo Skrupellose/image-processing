@@ -27,6 +27,11 @@ let package = Package(
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
+        ),
+        .testTarget(
+            name: "LiveCoverStudioTests",
+            dependencies: ["LiveCoverStudio"],
+            path: "Tests/LiveCoverStudioTests"
         )
     ],
     swiftLanguageVersions: [.v5]
